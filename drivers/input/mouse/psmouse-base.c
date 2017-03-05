@@ -68,6 +68,10 @@ static bool psmouse_smartscroll = true;
 module_param_named(smartscroll, psmouse_smartscroll, bool, 0644);
 MODULE_PARM_DESC(smartscroll, "Logitech Smartscroll autorepeat, 1 = enabled (default), 0 = disabled.");
 
+static bool psmouse_a4tech_2wheels = false;
+module_param_named(a4tech_hack, psmouse_a4tech_2wheels, bool, 0644);
+MODULE_PARM_DESC(a4tech_hack, "A4Tech second scroll wheel hack, 1 = enabled, 0 = disabled(default).");
+
 static unsigned int psmouse_resetafter = 5;
 module_param_named(resetafter, psmouse_resetafter, uint, 0644);
 MODULE_PARM_DESC(resetafter, "Reset device after so many bad packets (0 = never).");
@@ -164,13 +168,64 @@ psmouse_ret_t psmouse_process_byte(struct psmouse *psmouse)
 			input_report_rel(dev, REL_HWHEEL, (int) (packet[3] & 32) - (int) (packet[3] & 31));
 			break;
 		case 0x00:
-		case 0xC0:
-			input_report_rel(dev, REL_WHEEL, (int) (packet[3] & 8) - (int) (packet[3] & 7));
+		case 0xC0: /*
+			    * Some A4Tech mice have two scroll wheels but they
+			    * only return +/-1 for first or +/-2 for second
+			    * scroll wheel using LS Nibble so standard code
+			    * effectively multipled the movement by two for the
+			    * second wheel but reported it as a first wheel
+			    * movement.
+			    */
+			if (psmouse_a4tech_2wheels)
+				switch (packet[3] & 0x0F) {
+				case 0x0F: /* Upwards on first wheel*/
+					input_report_rel(dev, REL_WHEEL,
+								(int) (+1));
+					break;
+				case 0x0E: /*
+					    * Upwards on second wheel, sign
+					    * inverted so it becomes to the left
+					    */
+					input_report_rel(dev, REL_HWHEEL,
+								(int) (-1));
+					break;
+				case 0x02: /*
+					    * Downwards on second wheel, sign
+					    * inverted so it becomes to the
+					    * right
+					    */
+					input_report_rel(dev, REL_HWHEEL,
+								(int) (+1));
+					break;
+				case 0x01: /* Downwards on first wheel */
+					input_report_rel(dev, REL_WHEEL,
+								(int) (-1));
+					break;
+				case 0x00: /* Valid, but no-op */
+					break;
+				default: /*
+					  * Out of range data, assume hack is not
+					  * applicable after all.
+					  */
+					psmouse_warn(psmouse,
+							"%s at %s - unexpected scroll wheel data detected!\n"
+							"Bytes processed were: 0x%02x%02x%02x%02x.\n"
+							"The A4Tech Second scroll wheel hack has been disabled.\n",
+							psmouse->name, psmouse->phys,
+							packet[0], packet[1],
+							packet[2], packet[3]);
+					psmouse_a4tech_2wheels = false;
+				}
+			else
+				input_report_rel(dev, REL_WHEEL,
+							(int) (packet[3] & 8)
+							-(int) (packet[3] & 7));
+
 			input_report_key(dev, BTN_SIDE, (packet[3] >> 4) & 1);
 			input_report_key(dev, BTN_EXTRA, (packet[3] >> 5) & 1);
 			break;
-		}
-		break;
+		} /* switch (packet[3] & 0xC) cases 0x00 AND 0xC0 */
+		break; /* case PSMOUSE_IMEX */
 
 	case PSMOUSE_GENPS:
 		/* Report scroll buttons on NetMice */
